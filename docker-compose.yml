@@ -1,0 +1,98 @@
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: always
+
+  airflow-webserver:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    image: airflow_webserver
+    container_name: airflow_webserver
+    environment:
+      - AIRFLOW__CORE__FERNET_KEY=bZqCnhhezAoOwxDEjJiLDM-qxQUR7WBksbiJW0i5ZoU=
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    command: "webserver"
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
+    depends_on:
+      - postgres
+    restart: always
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    image: airflow_scheduler
+    container_name: airflow_scheduler
+    environment:
+      - AIRFLOW__CORE__FERNET_KEY=bZqCnhhezAoOwxDEjJiLDM-qxQUR7WBksbiJW0i5ZoU=
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    command: "scheduler"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
+    depends_on:
+      - postgres
+    restart: always
+
+  airflow-init:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    image: airflow_init
+    container_name: airflow_init
+    environment:
+      - LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__FERNET_KEY=bZqCnhhezAoOwxDEjJiLDM-qxQUR7WBksbiJW0i5ZoU=
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    entrypoint: ["bash", "-c", "airflow db init && airflow users create -u admin -p admin -r Admin -e admin@example.com -f admin -l user"]
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./data:/opt/airflow/data
+    depends_on:
+      - postgres
+    restart: on-failure
+
+  fastapi:
+    build:
+      context: ./fastapi
+      dockerfile: Dockerfile
+    image: fastapi_app
+    container_name: fastapi_app
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_PORT: 5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    volumes:
+      - ./data:/app/data  # Model ve scaler dosyaları burada volume olarak gelecek
+
+volumes:
+  postgres-data:
