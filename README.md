@@ -1,0 +1,1 @@
+# Enerji-T-ketimi-Tahmin-Uygulamas-
