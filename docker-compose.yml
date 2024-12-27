@@ -3,9 +3,9 @@ services:
     image: postgres:13
     container_name: postgres
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: postgres_user
+      POSTGRES_PASSWORD: your_password
+      POSTGRES_DB: your_db
     ports:
       - "5433:5432"
     volumes:
@@ -19,8 +19,8 @@ services:
     image: airflow_webserver
     container_name: airflow_webserver
     environment:
-      - AIRFLOW__CORE__FERNET_KEY=bZqCnhhezAoOwxDEjJiLDM-qxQUR7WBksbiJW0i5ZoU=
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__FERNET_KEY=your_fernet_key
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://your_postgres:your_postgres@postgres:5432/your_db
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
     command: "webserver"
     ports:
@@ -41,8 +41,8 @@ services:
     image: airflow_scheduler
     container_name: airflow_scheduler
     environment:
-      - AIRFLOW__CORE__FERNET_KEY=bZqCnhhezAoOwxDEjJiLDM-qxQUR7WBksbiJW0i5ZoU=
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__FERNET_KEY=your_fernet_key
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://your_user:your_db@your_postgres:5432/your_db
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
     command: "scheduler"
     volumes:
@@ -62,10 +62,10 @@ services:
     container_name: airflow_init
     environment:
       - LOAD_EXAMPLES=False
-      - AIRFLOW__CORE__FERNET_KEY=bZqCnhhezAoOwxDEjJiLDM-qxQUR7WBksbiJW0i5ZoU=
+      - AIRFLOW__CORE__FERNET_KEY=your_fernet_key
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-    entrypoint: ["bash", "-c", "airflow db init && airflow users create -u admin -p admin -r Admin -e admin@example.com -f admin -l user"]
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://your_user:your_db@your_postgres:5432/your_db
+    entrypoint: ["bash", "-c", "airflow db init && airflow users create -u your_db -p your_user -r your_password -e admin@example.com -f admin -l user"]
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
