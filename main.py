@@ -1,13 +1,13 @@
 import os
 import pickle
 import numpy as np
-import psycopg2
 import pandas as pd
-import tensorflow as tf
 from datetime import datetime
+from typing import List, Optional
+
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from typing import List
+
 from sqlalchemy import create_engine, Column, Integer, Float, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -24,11 +24,13 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-MODEL_PATH = "/app/data/best_lstm_model.h5"
+MODEL_PATH = "/app/data/best_xgboost_model.pkl"
 SCALER_PATH = "/app/data/scaler.pkl"
 
-class EnergyConsumptionCleaned(Base):
-    __tablename__ = 'energy_usage_cleaned'
+
+# --- SQLAlchemy Model ---
+class EnergyConsumptionCleanedFeatures(Base):
+    __tablename__ = "energy_usage_cleaned_features"
 
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime)
@@ -65,18 +67,18 @@ class EnergyConsumptionCleaned(Base):
     is_weekend = Column(Integer)
     month = Column(Integer)
     season = Column(Integer)
-    hour_sin = Column(Float)
-    hour_cos = Column(Float)
-    t_avg_inside = Column(Float)
-    rh_avg_inside = Column(Float)
-    temp_diff = Column(Float)
-    lights_binary = Column(Integer)
-    appliances_lag1 = Column(Float)
-    appliances_lag6 = Column(Float)
-    appliances_lag144 = Column(Float)
-    appliances_rolling_mean_144 = Column(Float)
-    t_out_rolling_mean_144 = Column(Float)
+    hour_sin_1 = Column(Float)
+    hour_cos_1 = Column(Float)
 
+    # Gecikmeli (lag) sütunlarda NULL değer olabilmesi için nullable=True
+    appliances_lag1 = Column(Float, nullable=True)
+    appliances_lag6 = Column(Float, nullable=True)
+    appliances_lag12 = Column(Float, nullable=True)
+    appliances_rolling_mean_144 = Column(Float, nullable=True)
+    # Diğer sütunlar...
+
+
+# --- Pydantic (FastAPI) Model ---
 class EnergyConsumptionResponse(BaseModel):
     id: int
     timestamp: datetime
@@ -113,23 +115,23 @@ class EnergyConsumptionResponse(BaseModel):
     is_weekend: int
     month: int
     season: int
-    hour_sin: float
-    hour_cos: float
-    t_avg_inside: float
-    rh_avg_inside: float
-    temp_diff: float
-    lights_binary: int
-    appliances_lag1: float
-    appliances_lag6: float
-    appliances_lag144: float
-    appliances_rolling_mean_144: float
-    t_out_rolling_mean_144: float
+    hour_sin_1: float
+    hour_cos_1: float
+
+    # Bu sütunlar veritabanında NULL dönebiliyor, o yüzden Optional.
+    appliances_lag1: Optional[float] = None
+    appliances_lag6: Optional[float] = None
+    appliances_lag12: Optional[float] = None
+    appliances_rolling_mean_144: Optional[float] = None
 
     class Config:
         orm_mode = True
+        # Pydantic v2'de 'orm_mode' yerine 'from_attributes = True' kullanılabilir.
 
+
+# --- Diğer Pydantic Modelleri ---
 class PredictionInput(BaseModel):
-    features: list
+    features: List[float]
 
 class PredictionResponse(BaseModel):
     prediction: float
@@ -137,13 +139,14 @@ class PredictionResponse(BaseModel):
 class SavingsResponse(BaseModel):
     suggestions: List[str]
 
-def load_model_and_scaler():
+def load_xgboost_model_and_scaler():
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
         try:
-            model = tf.keras.models.load_model(MODEL_PATH)
+            with open(MODEL_PATH, 'rb') as f:
+                model = pickle.load(f)
             with open(SCALER_PATH, 'rb') as f:
                 scaler = pickle.load(f)
-            print("Model ve Scaler başarıyla yüklendi.")
+            print("XGBoost Model ve Scaler başarıyla yüklendi.")
             return model, scaler
         except Exception as e:
             print(f"Model veya Scaler yüklenirken hata oluştu: {e}")
@@ -152,7 +155,9 @@ def load_model_and_scaler():
         print("Model veya Scaler dosyası bulunamadı.")
         return None, None
 
-model, scaler = load_model_and_scaler()
+# Initialize model and scaler to None; they will be loaded on startup
+model = None
+scaler = None
 
 def get_db():
     db = SessionLocal()
@@ -170,6 +175,9 @@ app = FastAPI(
 def startup_event():
     Base.metadata.create_all(bind=engine)
     print("Tablolar kontrol edildi ve gerekirse oluşturuldu.")
+    # Model ve scaler'ı yeniden yüklemek için
+    global model, scaler
+    model, scaler = load_xgboost_model_and_scaler()
 
 @app.get("/", summary="Ana Sayfa")
 def read_root():
@@ -177,7 +185,7 @@ def read_root():
         raise HTTPException(status_code=503, detail="Model yüklenmedi.")
     return {
         "message": "Model başarıyla yüklendi.",
-        "en_iyi_model": "LSTM",
+        "en_iyi_model": "XGBOOST",
         "aciklama": "Bu API ile akıllı ev verilerinizden enerji tüketimi tahmini alabilir, tasarruf önerileri edinebilirsiniz.",
         "endpointler": {
             "/info": "Projenin amacı, yöntemleri ve tasarruf önerileri hakkında bilgi",
@@ -191,7 +199,7 @@ def read_root():
 @app.get("/data", response_model=List[EnergyConsumptionResponse], summary="Temizlenmiş Veriyi Getir")
 def get_data(limit: int = 10, db: Session = Depends(get_db)):
     try:
-        data = db.query(EnergyConsumptionCleaned).limit(limit).all()
+        data = db.query(EnergyConsumptionCleanedFeatures).limit(limit).all()
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Veri çekilirken hata oluştu: {e}")
@@ -199,36 +207,32 @@ def get_data(limit: int = 10, db: Session = Depends(get_db)):
 @app.post("/predict", response_model=PredictionResponse, summary="Tahmin Yap")
 def predict(data: PredictionInput):
     if model is None or scaler is None:
-        raise HTTPException(status_code=503, detail="Model veya Scaler yüklenmedi.")
+        raise HTTPException(status_code=503, detail="XGBoost Model veya Scaler yüklenmedi.")
     try:
         # Giriş verisini numpy array'e dönüştür
         X_new = np.array(data.features)
         
         # Giriş verisinin boyutunu kontrol et
+        if len(X_new.shape) == 1:
+            X_new = X_new.reshape(1, -1)
         if X_new.shape[1] != 43:
             raise HTTPException(status_code=400, detail="Giriş verisi 43 özellik içermelidir.")
         
         # Giriş verisini scaler ile dönüştür
         X_new = scaler.transform(X_new)
-
-        # Eğer sadece 1 zaman adımı varsa, bunu 24 zaman adımına genişlet
-        if X_new.shape[0] == 1:
-            X_new = np.tile(X_new, (24, 1))  # (24, 43)
-
-        # Giriş verisini modelin beklediği şekle dönüştür
-        X_new = X_new.reshape(1, 24, 43)
-
-        # Model tahmini
-        pred_log = model.predict(X_new)
-        pred = np.expm1(pred_log[0][0])  # Log dönüşümünü tersine çevir
-        return {"prediction": float(pred)}
+        
+        # Tahmin yap
+        pred = model.predict(X_new)
+        mean_prediction = pred.mean()  # Gerekirse ortalama alınabilir
+        
+        return {"prediction": float(mean_prediction)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tahmin yapılırken hata oluştu: {e}")
 
 @app.post("/reload-model", summary="Modeli Yeniden Yükle")
 def reload_model_endpoint():
     global model, scaler
-    model, scaler = load_model_and_scaler()
+    model, scaler = load_xgboost_model_and_scaler()
     if model and scaler:
         return {"message": "Model ve Scaler başarıyla yeniden yüklendi."}
     else:
@@ -243,7 +247,7 @@ def get_info():
         ),
         "yontem": (
             "Airflow: Otomatik veri pipeline. PostgreSQL: Veri saklama. "
-            "LSTM modeli: Enerji tüketim tahmini. FastAPI: Tahmin ve veri erişimi için arayüz."
+            "XGBOOST modeli: Enerji tüketim tahmini. FastAPI: Tahmin ve veri erişimi için arayüz."
         ),
         "tasarruf_onerileri": (
             "Tahmin edilen tüketim değerlerine göre belirli saatlerde cihaz kullanımını azaltma, "
@@ -251,36 +255,37 @@ def get_info():
         ),
         "iletisim": "admin@example.com"
     }
+
 @app.post("/savings", response_model=SavingsResponse, summary="Tasarruf Önerileri Al")
 def savings(data: PredictionInput):
+    if model is None or scaler is None:
+        raise HTTPException(status_code=503, detail="XGBoost Model veya Scaler yüklenmedi.")
     try:
+        # Giriş verisini numpy array'e dönüştür
         X_new = np.array(data.features)
-
+        
+        # Giriş verisinin boyutunu kontrol et
+        if len(X_new.shape) == 1:
+            X_new = X_new.reshape(1, -1)
+        
         # Giriş verisini scaler ile dönüştür
         X_new = scaler.transform(X_new)
-
-        # Verinin boyutunu kontrol et
-        if X_new.shape[0] != 24 or X_new.shape[1] != 43:
-            raise HTTPException(status_code=400, detail="Giriş boyutları (24, 43) olmalıdır.")
-
-        # Model giriş şekline dönüştür
-        X_new = X_new.reshape(1, 24, 43)
-
+        
         # Model tahmini
         predictions = model.predict(X_new).flatten()
-
+        
         # Yüksek tüketim eşiklerini belirle
         threshold = 0.3
         high_consumption_periods = [f"{i}:00" for i, value in enumerate(predictions) if value > threshold]
-
+        
         # Önerileri oluştur
         suggestions = [f"{period} saatlerinde cihaz kullanımını azaltın." for period in high_consumption_periods]
-
+        
         # PostgreSQL'e önerileri kaydet
         with engine.connect() as connection:
             df_suggestions = pd.DataFrame({"hour": high_consumption_periods, "suggestion": suggestions})
             df_suggestions.to_sql("savings_suggestions", connection, if_exists="append", index=False)
-
+        
         return {"suggestions": suggestions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tasarruf önerileri hesaplanırken hata oluştu: {e}")
