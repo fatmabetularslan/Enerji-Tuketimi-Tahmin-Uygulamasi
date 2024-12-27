@@ -6,15 +6,16 @@ from sqlalchemy import create_engine
 import pandas as pd
 import numpy as np
 import pickle
-import tensorflow as tf
-from tensorflow.keras.models import Sequential # type: ignore
-from tensorflow.keras.layers import LSTM, Dense # type: ignore
-from tensorflow.keras.callbacks import EarlyStopping # type: ignore
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import cross_val_score
 from prophet import Prophet
 from xgboost import XGBRegressor
 import os
+import optuna
+from tensorflow.keras.models import Sequential # type: ignore
+from tensorflow.keras.layers import LSTM, Dropout, Dense # type: ignore
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau # type: ignore
 
 # PostgreSQL bağlantı bilgileri
 host = os.getenv("POSTGRES_HOST", "postgres")
@@ -26,171 +27,253 @@ DATABASE_URL = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database
 
 engine = create_engine(DATABASE_URL)
 
-def veri_hazirla(**context):
+# Fourier özellikleri ekleme fonksiyonu
+def add_fourier_features(df, column, period, n_harmonics=10):
+    t = 2 * np.pi * df[column] / period
+    for i in range(1, n_harmonics + 1):
+        df[f'{column}_sin_{i}'] = np.sin(i * t)
+        df[f'{column}_cos_{i}'] = np.cos(i * t)
+
+# Veri yükleme işlevi
+def load_energy_data(**context):
+    # CSV dosyasını oku
     df = pd.read_csv('/opt/airflow/data/energydata_complete.csv')
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values(by='date')
-    df.columns = df.columns.str.lower()
-    df.to_sql('energy_usage_prepared', engine, if_exists='replace', index=False)
-    print("Veri hazırlama tamamlandı.")
+    print("Yüklenen sütunlar:", df.columns.tolist())
+    
+    # CSV'deki sütunları kodda beklenen isimlere dönüştür
+    df.rename(columns={
+        'date': 'timestamp',
+        'Appliances': 'appliances',
+        'T1': 't1',
+        'RH_1': 'rh_1',
+        'T2': 't2',
+        'RH_2': 'rh_2',
+        'T3': 't3',
+        'RH_3': 'rh_3',
+        'T4': 't4',
+        'RH_4': 'rh_4',
+        'T5': 't5',
+        'RH_5': 'rh_5',
+        'T6': 't6',
+        'RH_6': 'rh_6',
+        'T7': 't7',
+        'RH_7': 'rh_7',
+        'T8': 't8',
+        'RH_8': 'rh_8',
+        'T9': 't9',
+        'RH_9': 'rh_9',
+        'T_out': 't_out',
+        'Press_mm_hg': 'press_mm_hg',
+        'RH_out': 'rh_out',
+        'Windspeed': 'windspeed',
+        'Visibility': 'visibility',
+        'Tdewpoint': 'tdewpoint'
+        # 'lights' zaten aynı isimde olduğundan rename gerekmiyor
+        # 'rv1' ve 'rv2' de aynı
+    }, inplace=True)
+    
+    # 'id' sütunu CSV'de yoksa, df'e ekleyebiliriz:
+    df.insert(0, 'id', range(1, len(df) + 1))
 
-def veri_temizle(**context):
-    query = "SELECT * FROM energy_usage_prepared"
-    df = pd.read_sql(query, engine)
-    df.columns = df.columns.str.lower()
-    if 'rv1' in df.columns:
-        df.drop('rv1', axis=1, inplace=True)
-    if 'rv2' in df.columns:
-        df.drop('rv2', axis=1, inplace=True)
+    # Şimdi required_columns kontrole hazır
+    required_columns = [
+        'id', 'timestamp', 'appliances', 'lights', 't1', 'rh_1',
+        't2', 'rh_2', 't3', 'rh_3', 't4', 'rh_4', 't5', 'rh_5',
+        't6', 'rh_6', 't7', 'rh_7', 't8', 'rh_8', 't9', 'rh_9',
+        't_out', 'press_mm_hg', 'rh_out', 'windspeed', 'visibility',
+        'tdewpoint', 'rv1', 'rv2'
+    ]
 
-    df_prophet = df[['date','appliances']].rename(columns={'date':'ds','appliances':'y'})
-    df_prophet.to_sql('energy_usage_prophet_ready', engine, if_exists='replace', index=False)
-    print("Veri temizleme tamamlandı.")
+    missing_columns = set(required_columns) - set(df.columns)
+    if missing_columns:
+        raise ValueError(f"Missing columns in CSV: {missing_columns}")
 
-def prophet_modelleme(**context):
-    query = "SELECT ds, y FROM energy_usage_prophet_ready ORDER BY ds"
-    df = pd.read_sql(query, engine, parse_dates=['ds'])
-    forecast_steps = 48
-    train = df.iloc[:-forecast_steps]
-    test = df.iloc[-forecast_steps:]
+    # Gerekli sütunları seç
+    df = df[required_columns]
+    
+    # PostgreSQL'e yükle
+    df.to_sql('energy_usage_cleaned', engine, if_exists='replace', index=False)
+    print("Veri başarılı bir şekilde yüklendi.")
 
-    model_prophet = Prophet(daily_seasonality=True, yearly_seasonality=False)
-    model_prophet.fit(train)
-    future = model_prophet.make_future_dataframe(periods=forecast_steps, freq='H')
-    forecast = model_prophet.predict(future)
 
-    pred = forecast.iloc[-forecast_steps:]['yhat'].values
-    actual = test['y'].values
-    mae = mean_absolute_error(actual, pred)
-    rmse = np.sqrt(mean_squared_error(actual, pred))
-    print(f"Prophet: MAE={mae}, RMSE={rmse}")
-
+# Feature engineering işlevi
 def veri_hazirla_features(**context):
-    query = "SELECT * FROM energy_usage_prepared ORDER BY date"
-    df = pd.read_sql(query, engine, parse_dates=['date'])
+    # Veriyi sorgudan çek
+    query = "SELECT * FROM energy_usage_cleaned ORDER BY timestamp"
+    df = pd.read_sql(query, engine, parse_dates=['timestamp'])
 
-    df['hour'] = df['date'].dt.hour
-    df['day_of_week'] = df['date'].dt.dayofweek
-    df['is_weekend'] = df['day_of_week'].isin([5,6]).astype(int)
-    df['month'] = df['date'].dt.month
-    df['season'] = ((df['month']%12 + 3)//3)
-    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+    # DataFrame sütunlarını kontrol etmek için ekleyin
+    print("Orijinal sütunlar:", df.columns.tolist())
 
-    temp_cols = [c for c in df.columns if c.startswith('t') and c not in ['t_out','tdewpoint']]
-    rh_cols = [c for c in df.columns if c.startswith('rh_') and c not in ['rh_out']]
+    # Sütun türlerini doğru şekilde ayarlayın
+    numeric_columns = [
+        'appliances', 'lights', 't1', 'rh_1', 't2', 'rh_2', 't3', 'rh_3',
+        't4', 'rh_4', 't5', 'rh_5', 't6', 'rh_6', 't7', 'rh_7',
+        't8', 'rh_8', 't9', 'rh_9', 't_out', 'press_mm_hg',
+        'rh_out', 'windspeed', 'visibility', 'tdewpoint', 'rv1',
+        'rv2'
+    ]
 
-    if len(temp_cols) > 0:
-        df['t_avg_inside'] = df[temp_cols].mean(axis=1)
-    else:
-        df['t_avg_inside'] = np.nan
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    if len(rh_cols) > 0:
-        df['rh_avg_inside'] = df[rh_cols].mean(axis=1)
-    else:
-        df['rh_avg_inside'] = np.nan
+    # Eksik verileri kaldırın veya doldurun
+    df.dropna(inplace=True)
 
-    if 't_out' in df.columns:
-        df['temp_diff'] = df['t_avg_inside'] - df['t_out']
-    else:
-        df['temp_diff'] = np.nan
+    # Zaman temelli özellikler
+    df['hour'] = df['timestamp'].dt.hour
+    df['day_of_week'] = df['timestamp'].dt.dayofweek
+    df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+    df['month'] = df['timestamp'].dt.month
+    df['season'] = ((df['month'] % 12 + 3) // 3)
 
-    if 'lights' in df.columns:
-        df['lights_binary'] = (df['lights'] > 0).astype(int)
+    # Fourier özellikleri
+    add_fourier_features(df, 'hour', 24)
+    add_fourier_features(df, 'day_of_week', 7)
 
+    # Gecikmeli özellikler
     df['appliances_lag1'] = df['appliances'].shift(1)
     df['appliances_lag6'] = df['appliances'].shift(6)
-    df['appliances_lag144'] = df['appliances'].shift(144)
+    df['appliances_lag12'] = df['appliances'].shift(12)
+
+    # Hareketli ortalamalar
     df['appliances_rolling_mean_144'] = df['appliances'].rolling(window=144, min_periods=1).mean()
 
-    if 't_out' in df.columns:
-        df['t_out_rolling_mean_144'] = df['t_out'].rolling(window=144, min_periods=1).mean()
+    # Anormallik Temizleme
+    df['appliances_zscore'] = (df['appliances'] - df['appliances'].mean()) / df['appliances'].std()
+    df = df[df['appliances_zscore'].abs() < 3]
 
-    df = df.dropna()
-    df['appliances'] = np.log1p(df['appliances'])
+    # DataFrame sütunlarını kontrol etmek için ekleyin
+    print("İşlem sonrası sütunlar:", df.columns.tolist())
 
-    df = df.reset_index(drop=True)
-    df['id'] = df.index + 1
+    # Veriyi yeni bir tabloya kaydetme
+    df.to_sql('energy_usage_cleaned_features', engine, if_exists='replace', index=False)
 
-    # date -> timestamp
-    df.rename(columns={'date':'timestamp'}, inplace=True)
+    print("Feature engineering tamamlandı ve veri temizlendi.")
 
-    df.to_sql('energy_usage_cleaned', engine, if_exists='replace', index=False)
-    print("Temizlenmiş veri 'energy_usage_cleaned' tablosuna yazıldı.")
+# XGBoost modelleme ve hiperparametre optimizasyonu
+def optimize_xgboost(train, test, features, target):
+    X_train, y_train = train[features], train[target]
+    X_test, y_test = test[features], test[target]
 
-    forecast_steps = 48
-    train = df.iloc[:-forecast_steps]
-    test = df.iloc[-forecast_steps:]
+    def objective(trial):
+        param_grid = {
+            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "gamma": trial.suggest_float("gamma", 0, 5),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0, 1),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0, 1),
+        }
+        xgb = XGBRegressor(**param_grid)
+        xgb.fit(X_train, y_train)
+        pred = xgb.predict(X_test)
+        mae = mean_absolute_error(y_test, pred)
+        return mae
 
-    features = [col for col in train.columns if col not in ['timestamp', 'appliances','id']]
-    scaler = MinMaxScaler()
-    train_scaled = train.copy()
-    test_scaled = test.copy()
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=50)
 
-    train_scaled[features] = scaler.fit_transform(train[features])
-    test_scaled[features] = scaler.transform(test[features])
+    best_params = study.best_params
+    print("En iyi hiperparametreler:", best_params)
 
-    train_scaled.to_csv('/opt/airflow/data/train_features.csv', index=False)
-    test_scaled.to_csv('/opt/airflow/data/test_features.csv', index=False)
+    # En iyi parametrelerle modeli eğit
+    best_model = XGBRegressor(**best_params)
+    best_model.fit(X_train, y_train)
+    pred = best_model.predict(X_test)
 
-    with open('/opt/airflow/data/scaler.pkl', 'wb') as f:
-        pickle.dump(scaler, f)
+    mae = mean_absolute_error(y_test, pred)
+    rmse = np.sqrt(mean_squared_error(y_test, pred))
 
-    print("Feature engineering tamamlandı, scaler kaydedildi ve train/test CSV'leri oluşturuldu.")
+    print(f"XGBoost Optimum: MAE={mae}, RMSE={rmse}")
+    return best_model, mae, rmse
 
 def xgboost_modelleme(**context):
     train = pd.read_csv('/opt/airflow/data/train_features.csv')
     test = pd.read_csv('/opt/airflow/data/test_features.csv')
     target = 'appliances'
-    features = [col for col in train.columns if col not in ['timestamp','appliances','id']]
+    features = [col for col in train.columns if col not in ['timestamp', 'appliances', 'id']]
+
+    # Optimizasyon ve en iyi modelin alınması
+    best_model, mae, rmse = optimize_xgboost(train, test, features, target)
+
+    # Scaler'ı eğitme
+    scaler = StandardScaler()
+    scaler.fit(train[features])
+
+    # Scaler'ı kaydetme
+    with open('/opt/airflow/data/scaler.pkl', 'wb') as f:
+        pickle.dump(scaler, f)
+
+    # Modeli kaydetme
+    with open('/opt/airflow/data/best_xgboost_model.pkl', 'wb') as f:
+        pickle.dump(best_model, f)
+
+    # Eğitim verisi üzerindeki performansı kontrol et
     X_train, y_train = train[features], train[target]
-    X_test, y_test = test[features], test[target]
+    pred_train = best_model.predict(X_train)
+    mae_train = mean_absolute_error(y_train, pred_train)
+    rmse_train = np.sqrt(mean_squared_error(y_train, pred_train))
 
-    model_xgb = XGBRegressor(n_estimators=200, max_depth=5)
-    model_xgb.fit(X_train, y_train)
-    pred = model_xgb.predict(X_test)
-    pred = np.expm1(pred)
-    actual = np.expm1(y_test.values)
-    mae = mean_absolute_error(actual, pred)
-    rmse = np.sqrt(mean_squared_error(actual, pred))
-    print(f"XGBoost: MAE={mae}, RMSE={rmse}")
+    print(f"Eğitim Verisi: MAE={mae_train}, RMSE={rmse_train}")
 
+    # Cross-validation performansı
+    cv_scores = cross_val_score(best_model, X_train, y_train, scoring='neg_mean_absolute_error', cv=5)
+    print(f"Cross-Validation MAE: {np.mean(-cv_scores)}")
+
+    # XCom'a metrikleri gönder
+    context['ti'].xcom_push(key='xgboost_metrics', value={'mae': mae, 'rmse': rmse})
+    context['ti'].xcom_push(key='xgboost_train_metrics', value={'mae_train': mae_train, 'rmse_train': rmse_train})
+    context['ti'].xcom_push(key='xgboost_cv_metrics', value={'cv_mae': np.mean(-cv_scores)})
+
+# LSTM modelleme
 def lstm_modelleme(**context):
     train = pd.read_csv('/opt/airflow/data/train_features.csv')
     test = pd.read_csv('/opt/airflow/data/test_features.csv')
     target = 'appliances'
-    features = [col for col in train.columns if col not in ['timestamp','appliances','id']]
+    features = [col for col in train.columns if col not in ['timestamp', 'appliances', 'id']]
 
     def create_lstm_dataset(df, features, target, look_back=24):
         values = df[features + [target]].values
         X, Y = [], []
-        for i in range(len(values)-look_back):
-            X.append(values[i:i+look_back, :-1])
-            Y.append(values[i+look_back, -1])
+        for i in range(len(values) - look_back):
+            X.append(values[i:i + look_back, :-1])
+            Y.append(values[i + look_back, -1])
         return np.array(X), np.array(Y)
 
     look_back = 24
     X_train, y_train = create_lstm_dataset(train, features, target, look_back)
     X_test, y_test = create_lstm_dataset(test, features, target, look_back)
 
-    model_lstm = Sequential()
-    model_lstm.add(LSTM(64, input_shape=(look_back, len(features))))
-    model_lstm.add(Dense(1))
-    model_lstm.compile(loss='mse', optimizer='adam')
+    model = Sequential([
+        LSTM(128, return_sequences=True, input_shape=(look_back, len(features))),
+        Dropout(0.2),
+        LSTM(64),
+        Dropout(0.2),
+        Dense(1, activation='linear')
+    ])
+
+    model.compile(optimizer='adam', loss='mse')
 
     es = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-    model_lstm.fit(X_train, y_train, epochs=20, batch_size=32, verbose=1, validation_split=0.1, callbacks=[es])
+    lr_reduction = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, min_lr=1e-5)
 
-    pred = model_lstm.predict(X_test)
+    model.fit(X_train, y_train, epochs=20, batch_size=32, validation_split=0.1, callbacks=[es, lr_reduction])
+
+    pred = model.predict(X_test).flatten()
     pred = np.expm1(pred)
     actual = np.expm1(y_test)
+
     mae = mean_absolute_error(actual, pred)
     rmse = np.sqrt(mean_squared_error(actual, pred))
+
     print(f"LSTM: MAE={mae}, RMSE={rmse}")
+    context['ti'].xcom_push(key='lstm_metrics', value={'mae': mae, 'rmse': rmse})
+    model.save('/opt/airflow/data/optimized_lstm_model.h5')
 
-    model_lstm.save('/opt/airflow/data/best_lstm_model.h5')
-    print("LSTM modeli kaydedildi.")
-
+# DAG Tanımlama
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -199,36 +282,23 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-from airflow import DAG
-
 dag = DAG(
     'veri_isleme_dag',
     default_args=default_args,
-    description='Akıllı Ev Verileri - Prophet, XGBoost, LSTM Pipeline',
+    description='Prophet, XGBoost ve LSTM Model Pipeline',
     schedule_interval=timedelta(days=1),
 )
 
-veri_hazirlama_task = PythonOperator(
-    task_id='veri_hazirla',
-    python_callable=veri_hazirla,
-    dag=dag,
-)
-
-veri_temizleme_task = PythonOperator(
-    task_id='veri_temizle',
-    python_callable=veri_temizle,
+# Görevler
+load_energy_data_task = PythonOperator(
+    task_id='load_energy_data',
+    python_callable=load_energy_data,
     dag=dag,
 )
 
 veri_hazirla_features_task = PythonOperator(
     task_id='veri_hazirla_features',
     python_callable=veri_hazirla_features,
-    dag=dag,
-)
-
-prophet_modelleme_task = PythonOperator(
-    task_id='prophet_modelleme',
-    python_callable=prophet_modelleme,
     dag=dag,
 )
 
@@ -244,4 +314,5 @@ lstm_modelleme_task = PythonOperator(
     dag=dag,
 )
 
-veri_hazirlama_task >> veri_temizleme_task >> veri_hazirla_features_task >> [xgboost_modelleme_task, lstm_modelleme_task] >> prophet_modelleme_task
+# Bağımlılıklar
+load_energy_data_task >> veri_hazirla_features_task >> [xgboost_modelleme_task, lstm_modelleme_task]
