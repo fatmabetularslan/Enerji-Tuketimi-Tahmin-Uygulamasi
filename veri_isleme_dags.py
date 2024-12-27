@@ -18,11 +18,11 @@ from tensorflow.keras.layers import LSTM, Dropout, Dense # type: ignore
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau # type: ignore
 
 # PostgreSQL bağlantı bilgileri
-host = os.getenv("POSTGRES_HOST", "postgres")
-database = os.getenv("POSTGRES_DB", "airflow")
-user = os.getenv("POSTGRES_USER", "airflow")
-password = os.getenv("POSTGRES_PASSWORD", "airflow")
-port = os.getenv("POSTGRES_PORT", "5432")
+host = os.getenv("POSTGRES_HOST", "your_host")
+database = os.getenv("POSTGRES_DB", "your_database")
+user = os.getenv("POSTGRES_USER", "your_user")
+password = os.getenv("POSTGRES_PASSWORD", "your_password")
+port = os.getenv("POSTGRES_PORT", "your_port")
 DATABASE_URL = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
 
 engine = create_engine(DATABASE_URL)
