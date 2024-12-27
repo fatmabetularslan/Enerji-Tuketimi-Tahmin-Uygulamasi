@@ -30,15 +30,19 @@ Bu proje, enerji tüketimi tahminine yönelik bir **REST API** uygulamasıdır. 
 
 ```plaintext
 .
-├── app/
-│   ├── main.py          # FastAPI uygulamasının ana dosyası
-│   ├── model.pkl        # Eğitilmiş tahmin modeli
-│   └── utils.py         # Yardımcı fonksiyonlar
-├── requirements.txt     # Bağımlılıklar
-├── Dockerfile           # Docker yapılandırması
-├── README.md            # Proje dokümantasyonu
-└── tests/
-    └── test_api.py      # API test dosyaları
+AIRFLOW_PROJECT
+├── airflow
+│   ├── dags
+│   ├── Dockerfile
+│   └── requirements.txt
+├── dags
+├── data
+│   └── energydata_complete.csv
+├── fastapi
+│   ├── Dockerfile
+│   ├── main.py
+└── docker-compose.yml
+
 ```
 ---
 
