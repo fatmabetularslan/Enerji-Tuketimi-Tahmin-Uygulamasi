@@ -6,18 +6,20 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sqlalchemy import create_engine, Column, Integer, Float, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
+# ------------------------------------------------------------------------------
 # PostgreSQL bağlantı bilgileri
-host = os.getenv("POSTGRES_HOST", "postgres")
-database = os.getenv("POSTGRES_DB", "airflow")
-user = os.getenv("POSTGRES_USER", "airflow")
-password = os.getenv("POSTGRES_PASSWORD", "airflow")
-port = os.getenv("POSTGRES_PORT", "5432")
+# ------------------------------------------------------------------------------
+host = os.getenv("POSTGRES_HOST", "your_postgres_host")
+database = os.getenv("POSTGRES_DB", "your_db")
+user = os.getenv("POSTGRES_USER", "your_user")
+password = os.getenv("POSTGRES_PASSWORD", "your_db")
+port = os.getenv("POSTGRES_PORT", "your_port")
 DATABASE_URL = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
 
 engine = create_engine(DATABASE_URL)
@@ -28,7 +30,9 @@ MODEL_PATH = "/app/data/best_xgboost_model.pkl"
 SCALER_PATH = "/app/data/scaler.pkl"
 
 
-# --- SQLAlchemy Model ---
+# ------------------------------------------------------------------------------
+# SQLAlchemy Mode
+# ------------------------------------------------------------------------------
 class EnergyConsumptionCleanedFeatures(Base):
     __tablename__ = "energy_usage_cleaned_features"
 
@@ -62,6 +66,7 @@ class EnergyConsumptionCleanedFeatures(Base):
     tdewpoint = Column(Float)
     rv1 = Column(Float)
     rv2 = Column(Float)
+
     hour = Column(Integer)
     day_of_week = Column(Integer)
     is_weekend = Column(Integer)
@@ -70,15 +75,16 @@ class EnergyConsumptionCleanedFeatures(Base):
     hour_sin_1 = Column(Float)
     hour_cos_1 = Column(Float)
 
-    # Gecikmeli (lag) sütunlarda NULL değer olabilmesi için nullable=True
+    # Lag & Rolling
     appliances_lag1 = Column(Float, nullable=True)
     appliances_lag6 = Column(Float, nullable=True)
     appliances_lag12 = Column(Float, nullable=True)
     appliances_rolling_mean_144 = Column(Float, nullable=True)
-    # Diğer sütunlar...
 
 
-# --- Pydantic (FastAPI) Model ---
+# ------------------------------------------------------------------------------
+# Pydantic (FastAPI) Models
+# ------------------------------------------------------------------------------
 class EnergyConsumptionResponse(BaseModel):
     id: int
     timestamp: datetime
@@ -118,7 +124,6 @@ class EnergyConsumptionResponse(BaseModel):
     hour_sin_1: float
     hour_cos_1: float
 
-    # Bu sütunlar veritabanında NULL dönebiliyor, o yüzden Optional.
     appliances_lag1: Optional[float] = None
     appliances_lag6: Optional[float] = None
     appliances_lag12: Optional[float] = None
@@ -126,19 +131,32 @@ class EnergyConsumptionResponse(BaseModel):
 
     class Config:
         orm_mode = True
-        # Pydantic v2'de 'orm_mode' yerine 'from_attributes = True' kullanılabilir.
 
 
-# --- Diğer Pydantic Modelleri ---
+# 43 özelliklik veriyi tahmin için alıyoruz
 class PredictionInput(BaseModel):
     features: List[float]
+
 
 class PredictionResponse(BaseModel):
     prediction: float
 
+
+
+# feedback_text / did_apply opsiyonel
+class RecommendationInput(BaseModel):
+    features: List[float]
+    feedback_text: Optional[str] = None
+    did_apply: Optional[bool] = None
+
+
 class SavingsResponse(BaseModel):
     suggestions: List[str]
 
+
+# ------------------------------------------------------------------------------
+# Model & Scaler Load
+# ------------------------------------------------------------------------------
 def load_xgboost_model_and_scaler():
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
         try:
@@ -155,10 +173,14 @@ def load_xgboost_model_and_scaler():
         print("Model veya Scaler dosyası bulunamadı.")
         return None, None
 
-# Initialize model and scaler to None; they will be loaded on startup
+
 model = None
 scaler = None
 
+
+# ------------------------------------------------------------------------------
+# DB session
+# ------------------------------------------------------------------------------
 def get_db():
     db = SessionLocal()
     try:
@@ -166,126 +188,207 @@ def get_db():
     finally:
         db.close()
 
+
+# ------------------------------------------------------------------------------
+# FastAPI Uygulaması
+# ------------------------------------------------------------------------------
 app = FastAPI(
-    title="Akıllı Ev Enerji Yönetim Sistemi API",
-    description="Akıllı ev enerji yönetimi projesi için API."
+    title="Appliances Energy Project - All in One",
+    description="""Bu projede, /data ile veriyi çekebilir, /predict ile tahmin,
+    /energyRecommendations ile tasarruf önerileri + feedback kaydı yapabilirsiniz."""
 )
+
 
 @app.on_event("startup")
 def startup_event():
     Base.metadata.create_all(bind=engine)
     print("Tablolar kontrol edildi ve gerekirse oluşturuldu.")
-    # Model ve scaler'ı yeniden yüklemek için
     global model, scaler
     model, scaler = load_xgboost_model_and_scaler()
 
-@app.get("/", summary="Ana Sayfa")
+
+# ------------------------------------------------------------------------------
+# Ana sayfa
+# ------------------------------------------------------------------------------
+@app.get("/")
 def read_root():
     if model is None:
         raise HTTPException(status_code=503, detail="Model yüklenmedi.")
     return {
-        "message": "Model başarıyla yüklendi.",
-        "en_iyi_model": "XGBOOST",
-        "aciklama": "Bu API ile akıllı ev verilerinizden enerji tüketimi tahmini alabilir, tasarruf önerileri edinebilirsiniz.",
-        "endpointler": {
-            "/info": "Projenin amacı, yöntemleri ve tasarruf önerileri hakkında bilgi",
-            "/data": "Temizlenmiş veriyi görüntülemek için",
-            "/predict": "POST isteğiyle features göndererek tahmin almak için",
-            "/reload-model": "Modeli ve scaler'ı yeniden yüklemek için",
-            "/docs": "Swagger arayüzünü görüntülemek için"
-        }
-    }
+            "message": "Model başarıyla yüklendi. Gelişmiş sürüm",
+            "endpointler": {
+            "/info": "Proje detay bilgisi",
+            "/data": "Veritabanından temizlenmiş veri",
+            "/predict": "XGBoost tahmini",
+            "/energyDocumentation": "Gelişmiş tasarruf önerileri",
+    
+            "/docs": "Swagger/OpenAPI UI"
+    }}
 
-@app.get("/data", response_model=List[EnergyConsumptionResponse], summary="Temizlenmiş Veriyi Getir")
+
+# ------------------------------------------------------------------------------
+# /data endpoint: veritabanındaki kayıtlardan ilk 'limit' kadarını getirir
+# ------------------------------------------------------------------------------
+@app.get("/data", response_model=List[EnergyConsumptionResponse])
 def get_data(limit: int = 10, db: Session = Depends(get_db)):
     try:
         data = db.query(EnergyConsumptionCleanedFeatures).limit(limit).all()
         return data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Veri çekilirken hata oluştu: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/predict", response_model=PredictionResponse, summary="Tahmin Yap")
+
+# ------------------------------------------------------------------------------
+# /predict endpoint: Tahmin
+# ------------------------------------------------------------------------------
+@app.post("/predict", response_model=PredictionResponse)
 def predict(data: PredictionInput):
     if model is None or scaler is None:
-        raise HTTPException(status_code=503, detail="XGBoost Model veya Scaler yüklenmedi.")
+        raise HTTPException(status_code=503, detail="Model veya Scaler yüklenmedi.")
     try:
-        # Giriş verisini numpy array'e dönüştür
-        X_new = np.array(data.features)
-        
-        # Giriş verisinin boyutunu kontrol et
-        if len(X_new.shape) == 1:
-            X_new = X_new.reshape(1, -1)
-        if X_new.shape[1] != 43:
-            raise HTTPException(status_code=400, detail="Giriş verisi 43 özellik içermelidir.")
-        
-        # Giriş verisini scaler ile dönüştür
-        X_new = scaler.transform(X_new)
-        
-        # Tahmin yap
-        pred = model.predict(X_new)
-        mean_prediction = pred.mean()  # Gerekirse ortalama alınabilir
-        
+        X_arr = np.array(data.features)
+
+        # Çok satırlı veri desteği
+        if len(X_arr.shape) == 1:
+            total_len = X_arr.shape[0]
+            if total_len % 43 != 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Giriş verisi 43'ün katı uzunlukta olmalı (her satır 43)."
+                )
+            n_rows = total_len // 43
+            X_arr = X_arr.reshape(n_rows, 43)
+        else:
+            if X_arr.shape[1] != 43:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Her satır 43 özellik içermeli."
+                )
+
+        X_scaled = scaler.transform(X_arr)
+        preds = model.predict(X_scaled)
+        mean_prediction = preds.mean()
+
         return {"prediction": float(mean_prediction)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tahmin yapılırken hata oluştu: {e}")
+        raise HTTPException(status_code=500, detail=f"Tahmin yapılırken hata: {e}")
 
-@app.post("/reload-model", summary="Modeli Yeniden Yükle")
+
+# ------------------------------------------------------------------------------
+# /energyRecommendations: Gelişmiş tasarruf önerileri + opsiyonel feedback
+# ------------------------------------------------------------------------------
+@app.post("/energyRecommendations", response_model=SavingsResponse)
+def energy_recommendations(data: RecommendationInput, db: Session = Depends(get_db)):
+    """
+    1) Model tahmini + tasarruf önerileri
+    2) Eğer 'feedback_text' veya 'did_apply' doluysa user_feedback tablosuna kaydet
+    """
+    if model is None or scaler is None:
+        raise HTTPException(status_code=503, detail="Model veya Scaler yüklenmedi.")
+
+    try:
+        # --- (A) Tahmin/Öneri ---
+        X_arr = np.array(data.features)
+
+        if len(X_arr.shape) == 1:
+            total_len = X_arr.shape[0]
+            if total_len % 43 != 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Giriş verisi (features) 43'ün katı olmalı."
+                )
+            n_rows = total_len // 43
+            X_arr = X_arr.reshape(n_rows, 43)
+        else:
+            if X_arr.shape[1] != 43:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Her satır 43 özellik içermeli."
+                )
+
+        X_scaled = scaler.transform(X_arr)
+        predictions = model.predict(X_scaled).flatten()
+
+        # Eşik değerleri
+        threshold_high = 0.4
+        threshold_medium = 0.2
+        dynamic_mean = 0.3
+        dynamic_std = 0.1
+        threshold_dynamic = dynamic_mean + dynamic_std  # 0.4
+
+        total_consumption = predictions.sum()
+        target_savings_rate = 0.1  # %10
+        optimal_consumption = total_consumption * (1 - target_savings_rate)
+        diff = total_consumption - optimal_consumption
+        estimated_bill = total_consumption  # 1 kWh = 1 TL varsayımı
+
+        suggestions = []
+
+        # her satır için
+        for i, val in enumerate(predictions):
+            hour_suggestions = []
+            if val > threshold_high:
+                hour_suggestions.append(f"{i}:00 saatinde tüketim yüksek.")
+            elif val > threshold_medium:
+                hour_suggestions.append(f"{i}:00 saatinde tüketim orta.")
+            else:
+                hour_suggestions.append(f"{i}:00 saatinde tüketim düşük.")
+
+            if val > threshold_dynamic:
+                hour_suggestions.append(f"{i}:00 saatinde dinamik eşik aşıldı.")
+
+            # saat (i) sabah/akşam vs.
+            if 7 <= i < 9:
+                hour_suggestions.append("Sabah (07-09) tasarrufu.")
+            elif 18 <= i < 22:
+                hour_suggestions.append("Akşam (18-22) tasarrufu.")
+
+            suggestions.append(" / ".join(hour_suggestions))
+
+        # hedef odaklı
+        if total_consumption > optimal_consumption:
+            suggestions.append(f"Günlük hedef tüketiminizden {diff:.2f} kWh fazladasınız.")
+        else:
+            suggestions.append("Tebrikler! %10 tasarruf hedefini yakaladınız.")
+
+        # fatura tahmini
+        suggestions.append(f"Tahmini tüketim: {total_consumption:.2f} kWh, ~{estimated_bill:.2f} TL.")
+
+        # ilk n satır önerisini tabloya yazma
+        n_rows = len(predictions)
+        store_suggestions = suggestions[:n_rows]
+        with engine.connect() as con:
+            df_suggestions = pd.DataFrame({
+                "hour": [f"{i}:00" for i in range(n_rows)],
+                "suggestion": store_suggestions
+            })
+            df_suggestions.to_sql("savings_suggestions", con=con, if_exists="append", index=False)
+
+        # (B) Feedback Kaydetme (opsiyonel) 
+        if data.feedback_text is not None or data.did_apply is not None:
+            feedback_dict = {
+                "suggestion_text": [data.feedback_text or ""],
+                "did_apply": [data.did_apply if data.did_apply is not None else False],
+                "timestamp": [datetime.utcnow()]
+            }
+            df_feedback = pd.DataFrame(feedback_dict)
+            with engine.connect() as con:
+                df_feedback.to_sql("user_feedback", con=con, if_exists="append", index=False)
+
+        return {"suggestions": suggestions}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Tasarruf önerileri veya feedback sırasında hata: {e}")
+
+
+# ------------------------------------------------------------------------------
+# /reload-model
+# ------------------------------------------------------------------------------
+@app.post("/reload-model")
 def reload_model_endpoint():
     global model, scaler
     model, scaler = load_xgboost_model_and_scaler()
     if model and scaler:
-        return {"message": "Model ve Scaler başarıyla yeniden yüklendi."}
+        return {"message": "Model ve Scaler yeniden yüklendi."}
     else:
         raise HTTPException(status_code=500, detail="Model veya Scaler yeniden yüklenemedi.")
-
-@app.get("/info", summary="Proje Bilgisi")
-def get_info():
-    return {
-        "proje_amaci": (
-            "Akıllı ev cihazlarından gelen enerji tüketim verilerini analiz ederek "
-            "enerji tasarrufu önerileri sunmak."
-        ),
-        "yontem": (
-            "Airflow: Otomatik veri pipeline. PostgreSQL: Veri saklama. "
-            "XGBOOST modeli: Enerji tüketim tahmini. FastAPI: Tahmin ve veri erişimi için arayüz."
-        ),
-        "tasarruf_onerileri": (
-            "Tahmin edilen tüketim değerlerine göre belirli saatlerde cihaz kullanımını azaltma, "
-            "ısıtma/soğutma ayarlarını optimize etme."
-        ),
-        "iletisim": "admin@example.com"
-    }
-
-@app.post("/savings", response_model=SavingsResponse, summary="Tasarruf Önerileri Al")
-def savings(data: PredictionInput):
-    if model is None or scaler is None:
-        raise HTTPException(status_code=503, detail="XGBoost Model veya Scaler yüklenmedi.")
-    try:
-        # Giriş verisini numpy array'e dönüştür
-        X_new = np.array(data.features)
-        
-        # Giriş verisinin boyutunu kontrol et
-        if len(X_new.shape) == 1:
-            X_new = X_new.reshape(1, -1)
-        
-        # Giriş verisini scaler ile dönüştür
-        X_new = scaler.transform(X_new)
-        
-        # Model tahmini
-        predictions = model.predict(X_new).flatten()
-        
-        # Yüksek tüketim eşiklerini belirle
-        threshold = 0.3
-        high_consumption_periods = [f"{i}:00" for i, value in enumerate(predictions) if value > threshold]
-        
-        # Önerileri oluştur
-        suggestions = [f"{period} saatlerinde cihaz kullanımını azaltın." for period in high_consumption_periods]
-        
-        # PostgreSQL'e önerileri kaydet
-        with engine.connect() as connection:
-            df_suggestions = pd.DataFrame({"hour": high_consumption_periods, "suggestion": suggestions})
-            df_suggestions.to_sql("savings_suggestions", connection, if_exists="append", index=False)
-        
-        return {"suggestions": suggestions}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tasarruf önerileri hesaplanırken hata oluştu: {e}")
