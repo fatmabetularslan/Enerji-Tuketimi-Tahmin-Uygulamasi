@@ -1,7 +1,27 @@
-# Enerji Tüketimi Tahmin Uygulaması
-
+# Enerji Tüketimi Tahmin Uygulamas
 Bu proje, enerji tüketimi tahminine yönelik bir **REST API** uygulamasıdır. **Python**, **FastAPI** ve **MinMaxScaler** gibi modern araçlar kullanılarak geliştirilmiştir. API, 24 zaman dilimi boyunca enerji tüketimi tahmin etmek için 43 özellikten oluşan giriş verilerini kabul eder ve çıktı olarak tahmin edilen değerleri döner.
 
+## 📘 Data ###
+
+Bu proje, enerji tüketimi tahmini yapmak amacıyla **Appliances Energy Prediction** veri setini kullanmaktadır. Veriseti, bir evdeki enerji tüketimini ve çevresel faktörlerin enerji tüketimi üzerindeki etkilerini anlamak için oluşturulmuştur. 
+
+**Veri Setinin Özellikleri:**
+- **Veri Kaynağı**: [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/374/appliances+energy+prediction)
+- **Gözlemler**: 19,735 örnek veri
+- **Zaman Dilimi**: Her 10 dakikada bir ölçülen enerji tüketimi değerleri
+- **Özellikler**: Sıcaklık, nem, ışık seviyesi, rüzgar hızı gibi toplamda 29 çevresel değişken
+- **Hedef Değişken**: Elektrikli ev aletlerinin enerji tüketimi (Appliances)
+
+Veriseti, enerji verimliliğini artırmak ve enerji tüketimini optimize etmek amacıyla makine öğrenmesi modelleri için oldukça zengin bir veri kaynağıdır.
+
+### Örnek Veri Kümesi
+
+| Appliances | Temp_inside | Humidity | Light | Windspeed |
+|------------|-------------|----------|-------|-----------|
+| 50         | 21.5        | 40       | 200   | 1.5       |
+| 60         | 22.0        | 42       | 210   | 2.0       |
+
+> **Not**: Tabloda gösterilen değerler, veri setindeki örnek verilerdir.
 ---
 
 ## 🚀 Proje Özellikleri
