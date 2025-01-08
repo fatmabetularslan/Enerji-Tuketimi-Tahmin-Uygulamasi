@@ -1,4 +1,4 @@
-# Enerji Tüketimi Tahmin Uygulamas
+# Enerji Tüketimi Tahmin Uygulaması
 Bu proje, enerji tüketimi tahminine yönelik bir **REST API** uygulamasıdır. **Python**, **FastAPI** ve **MinMaxScaler** gibi modern araçlar kullanılarak geliştirilmiştir. API, 24 zaman dilimi boyunca enerji tüketimi tahmin etmek için 43 özellikten oluşan giriş verilerini kabul eder ve çıktı olarak tahmin edilen değerleri döner.
 
 ## 🌐 Data ###
@@ -80,7 +80,7 @@ Analiz:
 
 ---
 
-### 2. Korelasyon Matrisi###
+### 2. Korelasyon Matrisi ###
 
 ![image](https://github.com/user-attachments/assets/41164ab7-14ae-4dc4-93f0-802006d7b2d4)
 
@@ -92,7 +92,7 @@ Analiz:
 
 ---
 
-## #3. Enerji Tüketimi Dağılımı ### 
+### 3. Enerji Tüketimi Dağılımı ### 
 
 ![image](https://github.com/user-attachments/assets/d1fc9380-526a-467a-b605-cecebb510143)
 
@@ -168,21 +168,21 @@ curl -X POST "http://127.0.0.1:8000/energy-recommendation" \
 
 ## 🧑‍💻 Kurulum
 
-**1. Depoyu Klonlayın**
+### 1. Depoyu Klonlayın ###
 ```bash
 git clone https://github.com/kullanici_adi/enerji-tahmin-api.git
 cd enerji-tahmin-api
 ```
 
 ---
-**2. Sanal Ortamı Kurun**
+### 2. Sanal Ortamı Kurun ###
 ```bash
 python -m venv venv
 source venv/bin/activate  # Windows için: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 ---
-**3. API'yi Çalıştırın**
+### 3. API'yi Çalıştırın ###
 ```bash
 uvicorn app.main:app --reload
 ```
@@ -190,13 +190,13 @@ uvicorn app.main:app --reload
 ---
 ## 🐳 Docker Kullanımı
 
-**1. Docker İmajını Oluşturun**
+### 1. Docker İmajını Oluşturun ###
 ```bash
 docker build -t enerji-tahmin-api .
 ```
 ---
 
-**2. Docker Konteynerini Çalıştırın**
+### 2. Docker Konteynerini Çalıştırın ###
 ```bash
 docker run -p 8000:8000 enerji-tahmin-api
 
