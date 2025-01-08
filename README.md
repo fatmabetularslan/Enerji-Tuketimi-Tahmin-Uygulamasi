@@ -1,7 +1,7 @@
 # Enerji Tüketimi Tahmin Uygulamas
 Bu proje, enerji tüketimi tahminine yönelik bir **REST API** uygulamasıdır. **Python**, **FastAPI** ve **MinMaxScaler** gibi modern araçlar kullanılarak geliştirilmiştir. API, 24 zaman dilimi boyunca enerji tüketimi tahmin etmek için 43 özellikten oluşan giriş verilerini kabul eder ve çıktı olarak tahmin edilen değerleri döner.
 
-## 📘 Data ###
+## 🌐 Data ###
 
 Bu proje, enerji tüketimi tahmini yapmak amacıyla **Appliances Energy Prediction** veri setini kullanmaktadır. Veriseti, bir evdeki enerji tüketimini ve çevresel faktörlerin enerji tüketimi üzerindeki etkilerini anlamak için oluşturulmuştur. 
 
